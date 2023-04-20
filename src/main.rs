@@ -39,56 +39,56 @@ async fn main() {
     let start_time = std::time::Instant::now();
 
     let num_workers = 12;
+    let pixels_per_worker = resolution[0] * resolution[1] / num_workers;
     let mut worker_handles = Vec::new();
-    let stack = Arc::new(Mutex::new(Vec::new()));
-    let results = Arc::new(Mutex::new(Vec::new()));
+    let results: Arc<Mutex<Vec<PixelInfo>>> = Arc::new(Mutex::new(Vec::new()));
 
-    for x in 0..resolution[0] {
-        for y in 0..resolution[1] {
-            stack.lock().unwrap().push((x, y));
-        }
-    }
-
-    for _ in 0..num_workers {
-        let stack = Arc::clone(&stack);
+    for worker_id in 0..num_workers {
+        // let stack = Arc::clone(&stack);
         let results = Arc::clone(&results);
-        let local_image_location = image_location.clone();
-        let local_resolution = resolution.clone();
-        let handle = std::thread::spawn(move || loop {
-            let task = stack.lock().unwrap().pop();
-            let (x, y): (u32, u32) = match task {
-                Some(t) => t,
-                None => break,
-            };
+        let handle = std::thread::spawn(move || {
+            let mut local_results = Vec::new();
 
-            let x_coord = image_location[0]
-                + (x as f64 / local_resolution[0] as f64)
-                    * (local_image_location[1] - local_image_location[0]) as f64;
-            let y_coord = image_location[2]
-                + (y as f64 / local_resolution[1] as f64)
-                    * (local_image_location[3] - local_image_location[2]) as f64;
+            for local_pixel_num in 0..pixels_per_worker {
+                let pixel_num = (local_pixel_num * num_workers) + worker_id;
+                if pixel_num >= resolution[0] * resolution[1] {
+                    break;
+                }
 
-            let mut z = [0.0, 0.0];
-            let c = [x_coord, y_coord];
-            let mut iterations = 0;
+                let x = pixel_num % resolution[0];
+                let y = pixel_num / resolution[0];
 
-            while z[0] * z[0] + z[1] * z[1] < 4.0 && iterations < 255 {
-                let temp = z[0] * z[0] - z[1] * z[1] + c[0];
-                z[1] = 2.0 * z[0] * z[1] + c[1];
-                z[0] = temp;
-                iterations += 1;
+                let x_coord = image_location[0]
+                    + (x as f64 / resolution[0] as f64)
+                        * (image_location[1] - image_location[0]) as f64;
+                let y_coord = image_location[2]
+                    + (y as f64 / resolution[1] as f64)
+                        * (image_location[3] - image_location[2]) as f64;
+
+                let mut z = [0.0, 0.0];
+                let c = [x_coord, y_coord];
+                let mut iterations = 0;
+
+                while z[0] * z[0] + z[1] * z[1] < 4.0 && iterations < 255 {
+                    let temp = z[0] * z[0] - z[1] * z[1] + c[0];
+                    z[1] = 2.0 * z[0] * z[1] + c[1];
+                    z[0] = temp;
+                    iterations += 1;
+                }
+
+                let color = match iterations {
+                    1..=75 => COL_1,
+                    76..=150 => COL_2,
+                    151..=225 => COL_3,
+                    _ => COL_4,
+                };
+
+                let pixel_info = PixelInfo { x, y, color };
+
+                local_results.push(pixel_info);
             }
 
-            // return pixel_info;
-            let color = match iterations {
-                1..=75 => COL_1,
-                76..=150 => COL_2,
-                151..=200 => COL_3,
-                201..=250 => COL_4,
-                _ => [iterations, iterations, iterations],
-            };
-
-            results.lock().unwrap().push(PixelInfo { x, y, color });
+            results.lock().unwrap().extend(local_results);
         });
         worker_handles.push(handle);
     }
