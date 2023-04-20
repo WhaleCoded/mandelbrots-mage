@@ -3,6 +3,8 @@ use std::path;
 use std::vec;
 use tokio;
 
+use std::sync::{Arc, Mutex};
+
 // use clap::{Parser, Subcommand};
 const MAX_ITERATIONS: u16 = 65535;
 const COL_1: [u8; 3] = [185, 237, 221];
@@ -31,65 +33,77 @@ async fn main() {
     // )
     // .get_matches();
 
-    let x_res: u32 = 1920;
-    let y_res: u32 = 1920;
+    let resolution = [1920, 1080];
     let image_location = [-2.0, 2.0, -2.0, 2.0];
 
-    let mut resulting_image: Vec<Vec<[u8; 3]>> =
-        vec![vec![[0, 0, 0]; x_res as usize]; y_res as usize];
-
-    let mut thread_handels = vec![];
     let start_time = std::time::Instant::now();
 
-    for x in 0..x_res {
-        for y in 0..y_res {
-            let x_coord = image_location[0]
-                + (x as f64 / x_res as f64) * (image_location[1] - image_location[0]) as f64;
-            let y_coord = image_location[2]
-                + (y as f64 / y_res as f64) * (image_location[3] - image_location[2]) as f64;
+    let num_workers = 12;
+    let mut worker_handles = Vec::new();
+    let stack = Arc::new(Mutex::new(Vec::new()));
+    let results = Arc::new(Mutex::new(Vec::new()));
 
-            let pixel_task = tokio::spawn(async move {
-                let mut z = [0.0, 0.0];
-                let c = [x_coord, y_coord];
-                let mut iterations = 0;
-
-                while z[0] * z[0] + z[1] * z[1] < 4.0 && iterations < 255 {
-                    let temp = z[0] * z[0] - z[1] * z[1] + c[0];
-                    z[1] = 2.0 * z[0] * z[1] + c[1];
-                    z[0] = temp;
-                    iterations += 1;
-                }
-
-                // return pixel_info;
-                let color = match iterations {
-                    1..=75 => COL_1,
-                    76..=150 => COL_2,
-                    151..=200 => COL_3,
-                    201..=250 => COL_4,
-                    _ => [iterations, iterations, iterations],
-                };
-
-                PixelInfo {
-                    x: x,
-                    y: y,
-                    color: color,
-                }
-            });
-
-            thread_handels.push(pixel_task);
+    for x in 0..resolution[0] {
+        for y in 0..resolution[1] {
+            stack.lock().unwrap().push((x, y));
         }
     }
 
-    for thread in thread_handels {
-        let pixel_info = thread.await.unwrap();
-        resulting_image[pixel_info.y as usize][pixel_info.x as usize] = pixel_info.color;
+    for _ in 0..num_workers {
+        let stack = Arc::clone(&stack);
+        let results = Arc::clone(&results);
+        let local_image_location = image_location.clone();
+        let local_resolution = resolution.clone();
+        let handle = std::thread::spawn(move || loop {
+            let task = stack.lock().unwrap().pop();
+            let (x, y): (u32, u32) = match task {
+                Some(t) => t,
+                None => break,
+            };
+
+            let x_coord = image_location[0]
+                + (x as f64 / local_resolution[0] as f64)
+                    * (local_image_location[1] - local_image_location[0]) as f64;
+            let y_coord = image_location[2]
+                + (y as f64 / local_resolution[1] as f64)
+                    * (local_image_location[3] - local_image_location[2]) as f64;
+
+            let mut z = [0.0, 0.0];
+            let c = [x_coord, y_coord];
+            let mut iterations = 0;
+
+            while z[0] * z[0] + z[1] * z[1] < 4.0 && iterations < 255 {
+                let temp = z[0] * z[0] - z[1] * z[1] + c[0];
+                z[1] = 2.0 * z[0] * z[1] + c[1];
+                z[0] = temp;
+                iterations += 1;
+            }
+
+            // return pixel_info;
+            let color = match iterations {
+                1..=75 => COL_1,
+                76..=150 => COL_2,
+                151..=200 => COL_3,
+                201..=250 => COL_4,
+                _ => [iterations, iterations, iterations],
+            };
+
+            results.lock().unwrap().push(PixelInfo { x, y, color });
+        });
+        worker_handles.push(handle);
+    }
+
+    for handle in worker_handles {
+        handle.join().unwrap();
     }
 
     // save image
-    let mut image_buffer = image::ImageBuffer::new(x_res, y_res);
-    for (x, y, pixel) in image_buffer.enumerate_pixels_mut() {
-        *pixel = image::Rgb(resulting_image[y as usize][x as usize]);
+    let mut image_buffer = image::ImageBuffer::new(resolution[0], resolution[1]);
+    for pixel_info in results.lock().unwrap().iter() {
+        image_buffer.put_pixel(pixel_info.x, pixel_info.y, image::Rgb(pixel_info.color));
     }
+
+    println!("Time taken: {}ms", start_time.elapsed().as_millis());
 
     // let mut dyn_image = image::DynamicImage::ImageRgb8(image_buffer);
     // dyn_image = dyn_image.resize(x_res, y_res, image::imageops::FilterType::Nearest);
@@ -97,8 +111,8 @@ async fn main() {
     let save_result = image::save_buffer(
         path::Path::new("./mandelbrot_img.png"),
         &image_buffer,
-        x_res,
-        y_res,
+        resolution[0],
+        resolution[1],
         image::ColorType::Rgb8,
     );
 
@@ -106,6 +120,4 @@ async fn main() {
         Ok(_) => println!("Image saved successfully!"),
         Err(e) => println!("Error saving image: {}", e),
     }
-
-    println!("Time taken: {}ms", start_time.elapsed().as_millis());
 }
