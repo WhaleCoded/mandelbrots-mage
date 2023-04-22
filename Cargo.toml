@@ -17,3 +17,6 @@ thiserror = "1.0"
 chrono = "0.4.19"
 tokio = { version = "1", features = ["full"] }
 image = "0.24.6"
+
+[profile.release]
+debug = true
